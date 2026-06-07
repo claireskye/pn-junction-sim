@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>P-N Junction Physics Simulator</title>
+    <style>
+        /* Dark Mode Styling */
+        body {
+            background-color: #121212;
+            color: #e0e0e0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        h1 { margin-top: 0; color: #4dabf7; text-align: center; }
+        
+        .container {
+            background: #1e1e1e;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.8);
+            max-width: 900px;
+            width: 100%;
+        }
+
+        /* Canvas Screen */
+        canvas {
+            background: #000;
+            border: 2px solid #333;
+            border-radius: 8px;
+            width: 100%;
+            height: 350px;
+            display: block;
+            margin-bottom: 20px;
+        }
+
+        /* Control Panel */
+        .controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .control-group {
+            background: #2a2a2a;
+            padding: 15px;
+            border-radius: 8px;
+        }
+
+        label {
+            display: flex;
+            justify-content: space-between;
+            font-weight: bold;
+            margin-bottom: 15px;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            cursor: pointer;
+            accent-color: #4dabf7;
+        }
+
+        .slider-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: #888;
+            margin-top: 5px;
+            font-weight: bold;
+        }
+
+        /* Status Display */
+        .status-board {
+            margin-top: 20px;
+            padding: 15px;
+            background: #0d1b2a;
+            border-left: 5px solid #4dabf7;
+            border-radius: 4px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .status-board p { margin: 5px 0; }
+        .status-board span { font-weight: bold; color: #fff; }
+        .danger { color: #ff4d4d !important; text-shadow: 0 0 5px rgba(255,0,0,0.5); }
+        .active { color: #4cd137 !important; text-shadow: 0 0 5px rgba(0,255,0,0.5); }
+        .zener { color: #f0932b !important; }
+        .avalanche { color: #e056fd !important; }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>Dynamic P-N Junction Simulator</h1>
+        
+        <canvas id="simCanvas" width="900" height="350"></canvas>
+
+        <div class="controls">
+            <div class="control-group">
+                <label>
+                    <span>Impurities (Doping)</span>
+                    <span id="dopingVal">Medium</span>
+                </label>
+                <input type="range" id="dopingSlider" min="0" max="100" value="50">
+                <div class="slider-labels">
+                    <span>0 (Pure)</span>
+                    <span>Heavy (100)</span>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <label>
+                    <span>Battery Voltage</span>
+                    <span id="voltageVal">0 V</span>
+                </label>
+                <input type="range" id="voltageSlider" min="-100" max="50" value="0">
+                <div class="slider-labels">
+                    <span>-100V (Reverse)</span>
+                    <span>+50V (Forward)</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="status-board">
+            <div>
+                <p>Current Mode: <span id="modeOut">Equilibrium</span></p>
+                <p>Electrical Flow: <span id="flowOut">Blocked</span></p>
+            </div>
+            <div>
+                <p>Depletion Gap Width: <span id="gapOut">Medium</span></p>
+                <p>Breakdown Threshold: <span id="breakdownOut">-</span></p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('simCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        // UI Elements
+        const dopingSlider = document.getElementById('dopingSlider');
+        const voltageSlider = document.getElementById('voltageSlider');
+        const dopingVal = document.getElementById('dopingVal');
+        const voltageVal = document.getElementById('voltageVal');
+        const modeOut = document.getElementById('modeOut');
+        const gapOut = document.getElementById('gapOut');
+        const flowOut = document.getElementById('flowOut');
+        const breakdownOut = document.getElementById('breakdownOut');
+
+        // Physics State
+        let particles = [];
+        const numParticles = 400; // 200 holes, 200 electrons for a dense visualization
+        
+        // Initialize Particles with natural random 2D velocities
+        for (let i = 0; i < numParticles; i++) {
+            particles.push({
+                type: i < numParticles / 2 ? 'hole' : 'electron',
+                x: Math.random() * canvas.width,
+                y: Math.random() * canvas.height,
+                vx: (Math.random() - 0.5) * 4,
+                vy: (Math.random() - 0.5) * 4
+            });
+        }
+
+        function renderLoop() {
+            // Read slider values
+            let doping = parseFloat(dopingSlider.value);
+            let voltage = parseFloat(voltageSlider.value);
+
+            // Update UI text for sliders
+            voltageVal.innerText = voltage + " V";
+            if (doping === 0) dopingVal.innerText = "0 (Pure Silicon)";
+            else if (doping < 30) dopingVal.innerText = "Light";
+            else if (doping < 70) dopingVal.innerText = "Medium";
+            else dopingVal.innerText = "Heavy";
+
+            // --- CORE PHYSICS CALCULATIONS ---
+            let baseGap = 0;
+            let gapWidth = 0;
+            let breakdownVoltage = 0;
+            let mode = "";
+
+            if (doping === 0) {
+                mode = "Pure Silicon";
+                gapWidth = canvas.width; // Gap acts like it's the whole material
+                breakdownVoltage = null;
+            } else {
+                // Base gap is inversely proportional to doping
+                baseGap = 300 / Math.sqrt(doping + 5); 
+                
+                // Actual gap size reacts to voltage (Forward shrinks, Reverse widens)
+                gapWidth = Math.max(0, baseGap - (voltage * 4));
+
+                // Breakdown threshold calculation
+                // Heavy doping fails fast (-10V), Light doping holds out longer (-80V)
+                breakdownVoltage = -10 - ((100 - doping) * 0.8);
+
+                if (voltage <= breakdownVoltage) {
+                    mode = doping >= 50 ? "Zener Breakdown" : "Avalanche Breakdown";
+                } else if (gapWidth === 0 && voltage > 0) {
+                    mode = "Forward Bias";
+                } else if (voltage < 0) {
+                    mode = "Reverse Bias";
+                } else {
+                    mode = "Equilibrium";
+                }
+            }
+
+            // --- UPDATE STATUS BOARD ---
+            modeOut.innerText = mode;
+            if (mode === "Zener Breakdown") modeOut.className = "danger zener";
+            else if (mode === "Avalanche Breakdown") modeOut.className = "danger avalanche";
+            else if (mode === "Forward Bias") modeOut.className = "active";
+            else modeOut.className = "";
+            
+            if (doping === 0) {
+                gapOut.innerText = "N/A (No Junction)";
+                flowOut.innerText = "None (Insulator)";
+                breakdownOut.innerText = "N/A";
+            } else {
+                gapOut.innerText = gapWidth === 0 ? "0 px (Collapsed!)" : gapWidth.toFixed(1) + " px";
+                breakdownOut.innerText = breakdownVoltage.toFixed(1) + " V";
+                
+                if (mode === "Forward Bias") flowOut.innerText = "Flowing → (Standard)";
+                else if (mode.includes("Breakdown")) flowOut.innerText = "← VIOLENT REVERSE FLOW!";
+                else flowOut.innerText = "Blocked";
+            }
+
+            // --- DRAWING BACKGROUND ---
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (doping > 0) {
+                // P-Side (Left, Blueish)
+                ctx.fillStyle = 'rgba(0, 100, 255, 0.15)';
+                ctx.fillRect(0, 0, canvas.width / 2, canvas.height);
+                // N-Side (Right, Reddish)
+                ctx.fillStyle = 'rgba(255, 50, 50, 0.15)';
+                ctx.fillRect(canvas.width / 2, 0, canvas.width / 2, canvas.height);
+                
+                // Draw Depletion Region (Gap)
+                if (!mode.includes("Breakdown")) {
+                    ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+                    let gapStart = (canvas.width / 2) - (gapWidth / 2);
+                    ctx.fillRect(gapStart, 0, gapWidth, canvas.height);
+                    
+                    // Fixed Ions in the gap
+                    if (gapWidth > 20) {
+                        ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+                        ctx.font = '20px Arial';
+                        ctx.fillText("- - -", gapStart + 10, canvas.height / 2);
+                        ctx.fillText("+ + +", gapStart + gapWidth - 55, canvas.height / 2);
+                    }
+                }
+            }
+
+            // Screen Shake effect for breakdown
+            if (mode.includes("Breakdown")) {
+                ctx.save();
+                ctx.translate((Math.random()-0.5)*8, (Math.random()-0.5)*8);
+                ctx.fillStyle = mode === "Zener Breakdown" ? 'rgba(240, 147, 43, 0.2)' : 'rgba(224, 86, 253, 0.2)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+            }
+
+            // --- PARTICLE PHYSICS ENGINE ---
+            let gapStart = (canvas.width / 2) - (gapWidth / 2);
+            let gapEnd = (canvas.width / 2) + (gapWidth / 2);
+
+            particles.forEach(p => {
+                // Pure Silicon: Just drift lazily
+                if (mode === "Pure Silicon") {
+                    p.x += p.vx * 0.1;
+                    p.y += p.vy * 0.1;
+                    if (p.x < 0) p.x = canvas.width;
+                    if (p.x > canvas.width) p.x = 0;
+                    if (p.y < 0) p.y = canvas.height;
+                    if (p.y > canvas.height) p.y = 0;
+                } 
+                // Forward Bias: Continuous Flow (Right way)
+                else if (mode === "Forward Bias") {
+                    p.vx = p.type === 'hole' ? 4 + Math.random() * 2 : -4 - Math.random() * 2;
+                    p.vy += (Math.random() - 0.5) * 0.5; // Slight vertical wiggle
+                    
+                    p.x += p.vx;
+                    p.y += p.vy;
+                    
+                    // Wrap around
+                    if (p.x > canvas.width) p.x = 0;
+                    if (p.x < 0) p.x = canvas.width;
+                    if (p.y < 0) p.y = canvas.height;
+                    if (p.y > canvas.height) p.y = 0;
+                }
+                // Breakdown: Violent Continuous Flow (Wrong way)
+                else if (mode.includes("Breakdown")) {
+                    p.vx = p.type === 'hole' ? -12 - Math.random() * 5 : 12 + Math.random() * 5;
+                    p.vy += (Math.random() - 0.5) * 2;
+                    
+                    p.x += p.vx;
+                    p.y += p.vy;
+                    
+                    // Wrap around
+                    if (p.x > canvas.width) p.x = 0;
+                    if (p.x < 0) p.x = canvas.width;
+                    if (p.y < 0) p.y = canvas.height;
+                    if (p.y > canvas.height) p.y = 0;
+                }
+                // Equilibrium & Reverse Bias: Blocked by the gap, bouncing around
+                else {
+                    p.x += p.vx;
+                    p.y += p.vy;
+
+                    // Reverse bias pulls particles towards the outer edges
+                    let pull = mode === "Reverse Bias" ? 0.05 : 0;
+                    if (p.type === 'hole') p.vx -= pull;
+                    if (p.type === 'electron') p.vx += pull;
+
+                    // Speed limit to prevent out-of-control physics
+                    let speed = Math.sqrt(p.vx*p.vx + p.vy*p.vy);
+                    if (speed > 3) {
+                        p.vx = (p.vx / speed) * 3;
+                        p.vy = (p.vy / speed) * 3;
+                    }
+
+                    // Bounce off outer walls
+                    if (p.y < 4 || p.y > canvas.height - 4) p.vy *= -1;
+                    if (p.x < 4 || p.x > canvas.width - 4) p.vx *= -1;
+
+                    // Bounce off the Gap
+                    if (p.type === 'hole' && p.x >= gapStart - 4) {
+                        p.x = gapStart - 4;
+                        p.vx *= -1;
+                    }
+                    if (p.type === 'electron' && p.x <= gapEnd + 4) {
+                        p.x = gapEnd + 4;
+                        p.vx *= -1;
+                    }
+                }
+
+                // Draw Particle
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+                if (doping === 0) {
+                    ctx.fillStyle = 'rgba(100, 100, 100, 0.3)'; 
+                } else {
+                    ctx.fillStyle = p.type === 'hole' ? '#4dabf7' : '#ff4d4d'; 
+                }
+                ctx.fill();
+            });
+
+            if (mode.includes("Breakdown")) {
+                ctx.restore(); // Undo screen shake
+            }
+
+            requestAnimationFrame(renderLoop);
+        }
+
+        // Start Animation
+        renderLoop();
+    </script>
+</body>
+</html>
